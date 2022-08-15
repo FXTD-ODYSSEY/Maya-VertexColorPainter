@@ -10,29 +10,54 @@ UI setup callback then do another setup
 use different color set
 
 - [ ] fix app_filter not remove yet
+
+--- Test Code ---
+
+from maya import cmds
+cmds.file(f=1, new=1)
+cmds.polySphere()
+if cmds.pluginInfo('verter_color_painter',q=1,l=1):
+    cmds.unloadPlugin('verter_color_painter')
+cmds.loadPlugin(r"F:\repo\Maya-VertexColorPainter\plug-ins\verter_color_painter.py")
+
 """
 
+# Import future modules
+from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-from __future__ import absolute_import
 
-__author__ = 'timmyliang'
-__email__ = '820472580@qq.com'
-__date__ = '2022-08-12 15:31:41'
-
-
-
+# Import built-in modules
 from collections import defaultdict
+import sys
 
-from maya import OpenMaya, OpenMayaMPx, OpenMayaUI
+# Import third-party modules
+from Qt import QtCore
+from Qt import QtGui
+from Qt import QtWidgets
+from maya import OpenMaya
+from maya import OpenMayaMPx
+from maya import OpenMayaUI
 from pymel import core as pm
 from pymel.tools import py2mel
-from Qt import QtCore, QtGui, QtWidgets
+
+
+__author__ = "timmyliang"
+__email__ = "820472580@qq.com"
+__date__ = "2022-08-12 15:31:41"
+
 
 vertex_color_data = defaultdict(dict)
 PAINT_CTX = "artAttrColorPerVertexContext"
 
-def collect_vertex_color():
+
+def iterate_mit(itr):
+    while not itr.isDone():
+        yield itr
+        itr.next()
+
+
+def collect_viewport_vertex_color():
     selections = OpenMaya.MSelectionList()
     component_selections = OpenMaya.MSelectionList()
     OpenMaya.MGlobal.getActiveSelectionList(selections)
@@ -43,37 +68,88 @@ def collect_vertex_color():
     )
     OpenMaya.MGlobal.getActiveSelectionList(component_selections)
     OpenMaya.MGlobal.setActiveSelectionList(selections)
-    itr = OpenMaya.MItSelectionList(component_selections)
 
-    while not itr.isDone():
+    vertex_color_data.clear()
+    for itr in iterate_mit(OpenMaya.MItSelectionList(component_selections)):
         dag_path = OpenMaya.MDagPath()
         component = OpenMaya.MObject()
         itr.getDagPath(dag_path, component)
 
-        vtx_itr = OpenMaya.MItMeshVertex(dag_path, component)
-        while not vtx_itr.isDone():
+        for vtx_itr in iterate_mit(OpenMaya.MItMeshVertex(dag_path, component)):
             index = vtx_itr.index()
             color = OpenMaya.MColor()
             vtx_itr.getColor(color)
             vertex_color_data[dag_path][index] = color
-            vtx_itr.next()
-        itr.next()
 
-class AppFilter(QtCore.QObject):
+
+class AppVertexColorFilter(QtCore.QObject):
     pressed = QtCore.Signal()
     released = QtCore.Signal()
+    channels = "RGBA"
+    inst = None
 
     def __init__(self, *args, **kwargs):
-        super(AppFilter, self).__init__(*args, **kwargs)
+        super(AppVertexColorFilter, self).__init__(*args, **kwargs)
         self.pressed.connect(self.press_viewport)
-        self.released.connect(self.release_viewport)
+        self.released.connect(lambda: pm.evalDeferred(self.release_viewport))
         self.color = (0, 0, 0)
+
+    @staticmethod
+    def get_paint_nodes():
+        for node in set(pm.artAttrPaintVertexCtx(PAINT_CTX, q=1, pna=1).split()):
+            yield pm.PyNode(node)
+
+    @classmethod
+    def setup_color_set(cls):
+        for node in cls.get_paint_nodes():
+            node.displayColors.set(1)
+            color_sets = pm.polyColorSet(node, q=1, allColorSets=1)
+            color_sets = color_sets or pm.polyColorSet(node, create=1)
+            main_color_set = color_sets[0]
+
+            for color_channel in cls.channels:
+                color_set = "VertexColor{0}".format(color_channel)
+                if color_set not in color_sets:
+                    pm.polyColorSet(node, create=1, colorSet=color_set)
+            pm.polyColorSet(node, currentColorSet=1, colorSet=main_color_set)
+        # TODO(timmyliang): extract main color set to color channel set
+
+    @classmethod
+    def reset_color_set(cls):
+        for node in cls.get_paint_nodes():
+            color_sets = pm.polyColorSet(node, q=1, allColorSets=1)
+            for color_channel in cls.channels:
+                color_set = "VertexColor{0}".format(color_channel)
+                if color_set in color_sets:
+                    pm.polyColorSet(node, delete=1, colorSet=color_set)
+
+    @classmethod
+    def apply_color_channel(cls):
+        pass
+
+    @classmethod
+    def install(cls):
+        cls.inst = cls()
+        app = QtWidgets.QApplication.instance()
+        app.installEventFilter(cls.inst)
+        cls.inst.setup_color_set()
+
+    @classmethod
+    def uninstall(cls):
+        if not cls.inst:
+            return
+
+        app = QtWidgets.QApplication.instance()
+        app.removeEventFilter(cls.inst)
+        cls.inst.reset_color_set()
+        cls.inst.deleteLater()
+        cls.inst = None
 
     def eventFilter(self, receiver, event):
         if event.type() == QtCore.QEvent.MouseButtonPress:
             if self.is_viewport(receiver):
                 self.pressed.emit()
-        if event.type() == QtCore.QEvent.MouseButtonRelease:
+        elif event.type() == QtCore.QEvent.MouseButtonRelease:
             if self.is_viewport(receiver):
                 self.released.emit()
         return False
@@ -88,54 +164,48 @@ class AppFilter(QtCore.QObject):
         self.color = pm.artAttrPaintVertexCtx(PAINT_CTX, q=1, colorRGBValue=1)
         pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, colorRGBValue=[self.color[0], 0, 0])
 
+        # TODO(timmyliang): collect viewport color set
+        collect_viewport_vertex_color()
+
     def release_viewport(self):
         print("release_viewport")
         # NOTE: reset vertex color
-        pm.evalDeferred(lambda:pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, colorRGBValue=self.color))
+        pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, colorRGBValue=self.color)
 
-global app_filter
-app_filter = AppFilter()
+        # TODO(timmyliang): get color channel apply to main color set
 
+
+def mel_proc(func):
+    py2mel.py2melProc(func, procName=func.__name__)
+
+
+@mel_proc
 def vertex_color_tool_on():
     # TODO(timmyliang): listen viewport press then modify the vertex color
     print("vertex_color_tool_on")
-    app = QtWidgets.QApplication.instance()
-    global app_filter
-    app.installEventFilter(app_filter)
+    AppVertexColorFilter.install()
 
 
+@mel_proc
 def vertex_color_tool_off():
     print("vertex_color_tool_off")
-    app = QtWidgets.QApplication.instance()
-    global app_filter
-    app.removeEventFilter(app_filter)
-
-def py2mel_proc(func):
-    py2mel.py2melProc(func, procName=func.__name__)
-
-def setup_mel():
-    py2mel_proc(vertex_color_tool_on)
-    py2mel_proc(vertex_color_tool_off)
-
-    PAINT_CTX = pm.mel.artAttrColorPerVertexToolScript(5)
-
-    pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, top="vertex_color_tool_on")
-    pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, tfp="vertex_color_tool_off")
-    
-    pm.mel.artAttrColorPerVertexToolScript(4)
+    AppVertexColorFilter.uninstall()
 
 
 # Initialize the script plug-in
 def initializePlugin(obj):
     plugin_fn = OpenMayaMPx.MFnPlugin(obj, "timmyliang", "1.0.0")
-    
-    setup_mel()
-    
+
+    PAINT_CTX = pm.mel.artAttrColorPerVertexToolScript(5)
+    pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, top="vertex_color_tool_on")
+    pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, tfp="vertex_color_tool_off")
+    pm.mel.artAttrColorPerVertexToolScript(4)
+
+    # TODO(timmyliang): hack ui to property window and values
+
 
 # Uninitialize the script plug-in
 def uninitializePlugin(obj):
     plugin_fn = OpenMayaMPx.MFnPlugin(obj)
-    
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, top="")
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, tfp="")
-
