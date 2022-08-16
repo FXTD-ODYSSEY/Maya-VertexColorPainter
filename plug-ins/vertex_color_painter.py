@@ -190,14 +190,19 @@ class AppVertexColorFilter(QtCore.QObject):
             else:
                 mode_index = cls.OPTION_ITEMS.index(mode) - 2
                 channel_colors = OpenMaya.MColorArray()
+                fix_colors = OpenMaya.MColorArray()
                 color_set = "VertexColor{0}".format(mode)
                 mesh.getVertexColors(channel_colors, color_set)
-                mesh.setCurrentColorSetName(main_color_set)
                 for vtx_index in vtx_array:
                     channel_color = channel_colors[vtx_index]
                     main_color = main_colors[vtx_index]
                     color = cls.make_color(channel_color, mode_index, main_color)
                     final_colors.append(color)
+                    fix_color = cls.make_color(channel_color, mode_index)
+                    fix_colors.append(fix_color)
+
+                mesh.setVertexColors(fix_colors, vtx_array)
+                mesh.setCurrentColorSetName(main_color_set)
                 mesh.setVertexColors(final_colors, vtx_array)
 
             mesh.setCurrentColorSetName(current_color_set)
@@ -351,7 +356,7 @@ def initializePlugin(obj):
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, top="vertex_color_tool_on")
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, tfp="vertex_color_tool_off")
     pm.evalDeferred(lambda: pm.mel.artAttrColorPerVertexToolScript(5))
-    # pm.evalDeferred(pm.toolPropertyWindow)
+    pm.evalDeferred(pm.toolPropertyWindow)
 
 # Uninitialize the script plug-in
 def uninitializePlugin(obj):
