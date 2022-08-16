@@ -71,7 +71,7 @@ class AppVertexColorFilter(QtCore.QObject):
 
     def __init__(self, *args, **kwargs):
         super(AppVertexColorFilter, self).__init__(*args, **kwargs)
-        self.is_press_alt = True
+        self.is_press_alt = False
         self.pressed.connect(self.press_viewport)
         self.released.connect(lambda: pm.evalDeferred(self.release_viewport))
         self.property_showed.connect(
@@ -251,7 +251,7 @@ class AppVertexColorFilter(QtCore.QObject):
 
         self.color = rgb or self.color
         sel = pm.radioButtonGrp(self.SINGLE_CONTROL, q=1, sl=1) - 1
-        color = self.make_color(self.color, index=sel) if sel > 0 else self.color
+        color = self.make_color(self.color, index=sel) if sel >= 0 else self.color
         pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, cl4=tuple(color))
 
         # NOTE(timmyliang): collect viewport color set
@@ -334,6 +334,8 @@ def mel_proc(func):
 @mel_proc
 def vertex_color_tool_on():
     AppVertexColorFilter.install()
+    if not pm.artAttrPaintVertexCtx(PAINT_CTX, q=1, pna=1):
+        pm.headsUpMessage('Please Select Mesh')
 
 
 @mel_proc
@@ -350,9 +352,8 @@ def initializePlugin(obj):
     pm.uitypes.toQtObject("ToolSettings").window().close()
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, top="vertex_color_tool_on")
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, tfp="vertex_color_tool_off")
-    pm.mel.artAttrColorPerVertexToolScript(5)
-
-    # pm.toolPropertyWindow()
+    pm.evalDeferred(lambda: pm.mel.artAttrColorPerVertexToolScript(5))
+    # pm.evalDeferred(pm.toolPropertyWindow)
 
 # Uninitialize the script plug-in
 def uninitializePlugin(obj):
