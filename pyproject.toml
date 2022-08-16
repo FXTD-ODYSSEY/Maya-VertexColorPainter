@@ -1,0 +1,51 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "Maya-VertexColorPainter"
+description = "Tweak NUBRBS Curve Brush"
+version = "0.1.0"
+license = "MIT"
+
+authors = []
+
+readme = "README.md"
+
+repository = "https://github.com/FXTD-ODYSSEY/Maya-VertexColorPainter"
+
+keywords = []
+
+
+[tool.poetry.dependencies]
+python = ">=2.7,>=3.8,<3.10"
+
+
+[tool.poetry.dev-dependencies]
+toml = "^0.10.2"
+doit = "^0.36.0"
+nox = "^2022.1.7"
+pyperclip = "^1.8.2"
+python-dotenv = "^0.20.0"
+tomlkit = "^0.10.2"
+pyuiw = "^0.2.4"
+
+[tool.black]
+include = "/.pyi?$"
+line-length = 88
+target_version = ["py37"]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+update_changelog_on_bump = true
+version = "0.1.0"
+version_files = ["pyproject.toml:version"]
+
+[tool.flakehell]
+base = [".flakehell.toml"]
+
+
+[tool.pyuiw]
+watch = ['./nodeline_designer/resources/designer']
+

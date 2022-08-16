@@ -8,11 +8,9 @@ from maya import cmds
 cmds.file(f=1, new=1)
 cmds.polySphere()
 cmds.polyColorPerVertex( rgb=(1,1, 0) )
-if cmds.pluginInfo('verter_color_painter',q=1,l=1):
-    cmds.unloadPlugin('verter_color_painter')
-cmds.loadPlugin(r"F:\repo\Maya-VertexColorPainter\plug-ins\verter_color_painter.py")
-pm.artAttrPaintVertexCtx('artAttrColorPerVertexContext', e=1, alp="")
-
+if cmds.pluginInfo('vertex_color_painter',q=1,l=1):
+    cmds.unloadPlugin('vertex_color_painter')
+cmds.loadPlugin(r"F:\repo\Maya-VertexColorPainter\plug-ins\vertex_color_painter.py")
 """
 
 # Import future modules
