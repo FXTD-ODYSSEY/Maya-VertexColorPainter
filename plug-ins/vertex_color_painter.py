@@ -20,8 +20,6 @@ from __future__ import print_function
 
 # Import built-in modules
 from collections import defaultdict
-from functools import partial
-import sys
 
 # Import third-party modules
 from Qt import QtCore
@@ -46,6 +44,30 @@ def iterate_mit(itr):
     while not itr.isDone():
         yield itr
         itr.next()
+
+
+def use_select_depth(func):
+    def decorator(*args, **kwargs):
+        is_use_depth = pm.selectPref(q=1, ud=1)
+        pm.selectPref(ud=True)
+        result = func(*args, **kwargs)
+        pm.selectPref(ud=is_use_depth)
+        return result
+
+    return decorator
+
+
+def to_component_mode(func):
+    def decorator(*args, **kwargs):
+        flags = ["co", "h", "l", "o", "p", "r", "t"]
+        select_modes = [flag for flag in flags if pm.selectMode(**{"q": 1, flag: 1})]
+        pm.selectMode(component=1)
+        # NOTES(timmyliang): update viewport
+        pm.refresh()
+        func(*args, **kwargs)
+        pm.selectMode(**{select_modes[0]: True})
+
+    return decorator
 
 
 class AppVertexColorFilter(QtCore.QObject):
@@ -78,7 +100,7 @@ class AppVertexColorFilter(QtCore.QObject):
         self.color = (0.0, 0.0, 0.0, 1.0)
 
     @staticmethod
-    def make_color(color, index=0, source_color=None):
+    def filter_color(color, index, source_color=None):
         if index > 3:
             return color
         is_color = isinstance(source_color, OpenMaya.MColor)
@@ -121,7 +143,7 @@ class AppVertexColorFilter(QtCore.QObject):
                 final_colors.clear()
                 for array_index in range(color_array.length()):
                     full_color = color_array[array_index]
-                    color = cls.make_color(full_color, index=channel_index)
+                    color = cls.filter_color(full_color, index=channel_index)
                     final_colors.append(color)
                 mesh.setVertexColors(final_colors, vtx_array)
             mesh.setCurrentColorSetName(main_color_set)
@@ -136,7 +158,10 @@ class AppVertexColorFilter(QtCore.QObject):
                     pm.polyColorSet(node, delete=1, colorSet=color_set)
 
     @classmethod
+    @to_component_mode
+    @use_select_depth
     def collect_viewport_vertex_ids(cls):
+        """Collect Viewport Paintable Component."""
         selections = OpenMaya.MSelectionList()
         component_selections = OpenMaya.MSelectionList()
         OpenMaya.MGlobal.getActiveSelectionList(selections)
@@ -162,19 +187,18 @@ class AppVertexColorFilter(QtCore.QObject):
     def apply_color_channel(cls):
         index = pm.radioButtonGrp(cls.SINGLE_CONTROL, q=1, sl=1)
         mode = cls.OPTION_ITEMS[index + 1]
-
+        is_rgb = mode == "RGB"
         for node in cls.get_paint_nodes():
             dag_path = node.__apimdagpath__()
             mesh = OpenMaya.MFnMesh(dag_path)
             color_sets = cls.get_color_sets(node)
             main_color_set = color_sets[0]
-            is_rgb = mode == "RGB"
 
             current_color_set = mesh.currentColorSetName()
 
             main_colors = OpenMaya.MColorArray()
             mesh.getVertexColors(main_colors, main_color_set)
-            vtx_array = cls.vertex_color_data[node.getParent().fullPathName()]
+            vtx_array = cls.vertex_color_data[node.fullPathName()]
             final_colors = OpenMaya.MColorArray()
 
             if is_rgb:
@@ -184,7 +208,7 @@ class AppVertexColorFilter(QtCore.QObject):
                     mesh.setCurrentColorSetName(color_set)
                     for vtx_index in vtx_array:
                         main_color = main_colors[vtx_index]
-                        color = cls.make_color(main_color, channel_index)
+                        color = cls.filter_color(main_color, channel_index)
                         final_colors.append(color)
                     mesh.setVertexColors(final_colors, vtx_array)
             else:
@@ -196,9 +220,9 @@ class AppVertexColorFilter(QtCore.QObject):
                 for vtx_index in vtx_array:
                     channel_color = channel_colors[vtx_index]
                     main_color = main_colors[vtx_index]
-                    color = cls.make_color(channel_color, mode_index, main_color)
+                    color = cls.filter_color(channel_color, mode_index, main_color)
                     final_colors.append(color)
-                    fix_color = cls.make_color(channel_color, mode_index)
+                    fix_color = cls.filter_color(channel_color, mode_index)
                     fix_colors.append(fix_color)
 
                 mesh.setVertexColors(fix_colors, vtx_array)
@@ -254,7 +278,7 @@ class AppVertexColorFilter(QtCore.QObject):
 
         self.color = rgb or self.color
         sel = pm.radioButtonGrp(self.SINGLE_CONTROL, q=1, sl=1) - 1
-        color = self.make_color(self.color, index=sel) if sel >= 0 else self.color
+        color = self.filter_color(self.color, index=sel) if sel >= 0 else self.color
         pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, cl4=tuple(color))
 
         # NOTE(timmyliang): collect viewport color set
@@ -338,7 +362,7 @@ def mel_proc(func):
 def vertex_color_tool_on():
     AppVertexColorFilter.install()
     if not pm.artAttrPaintVertexCtx(PAINT_CTX, q=1, pna=1):
-        pm.headsUpMessage('Please Select Mesh')
+        pm.headsUpMessage("Please Select Mesh")
 
 
 @mel_proc
@@ -353,10 +377,12 @@ def initializePlugin(obj):
     PAINT_CTX = pm.mel.artAttrColorPerVertexToolScript(5)
     # NOTES(timmyliang): close Tool Settings UI
     pm.uitypes.toQtObject("ToolSettings").window().close()
+    pm.refresh()
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, top="vertex_color_tool_on")
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, tfp="vertex_color_tool_off")
     pm.evalDeferred(lambda: pm.mel.artAttrColorPerVertexToolScript(5))
     pm.evalDeferred(pm.toolPropertyWindow)
+
 
 # Uninitialize the script plug-in
 def uninitializePlugin(obj):
