@@ -23,4 +23,4 @@ def load_vertex_painter_plugin():
 
 
 if not cmds.about(batch=1):
-    load_vertex_painter_plugin()
+    cmds.evalDeferred(load_vertex_painter_plugin,lp=1)
