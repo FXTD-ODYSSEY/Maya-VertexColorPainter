@@ -21,7 +21,7 @@ When you run the mel script once, the `vertex_color_painter.py` will load every 
 
 ## Usage Video
 
-https://cdn.jsdelivr.net/gh/FXTD-odyssey/FXTD-odyssey.github.io@master/post_img/1cdbfd5e/demo.mp4
+https://raw.githubusercontent.com/FXTD-ODYSSEY/FXTD-odyssey.github.io/master/post_img/1cdbfd5e/demo.mp4
 
 ## Usage
 
