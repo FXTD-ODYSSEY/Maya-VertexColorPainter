@@ -21,7 +21,7 @@
 
 ## 使用视频
 
-https://cdn.jsdelivr.net/gh/FXTD-odyssey/FXTD-odyssey.github.io@master/post_img/1cdbfd5e/demo.mp4
+https://user-images.githubusercontent.com/40897360/185857904-f416bc77-42f4-43b8-ac62-3f777bd6d255.mp4
 
 ## 使用说明
 
