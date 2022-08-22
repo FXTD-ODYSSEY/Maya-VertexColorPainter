@@ -2,6 +2,8 @@
 """
 Paint Vertex Color with single Channel support.
 
+- [ ] undo
+
 --- Test Code ---
 
 from maya import cmds
@@ -20,6 +22,7 @@ from __future__ import print_function
 
 # Import built-in modules
 from collections import defaultdict
+from functools import partial
 
 # Import third-party modules
 from Qt import QtCore
@@ -90,8 +93,8 @@ class AppVertexColorFilter(QtCore.QObject):
 
     single_control = "artAttrColorSingleColorChannel"
     option_control = "artAttrColorSingleColorOptionMenu"
-    option_items = ["Auto", "RGB", "R", "G", "B", "A"]
     channels = "RGBA"
+    option_items = ["Auto", "RGB"] + list(channels)
 
     def __init__(self, *args, **kwargs):
         super(AppVertexColorFilter, self).__init__(*args, **kwargs)
@@ -104,11 +107,11 @@ class AppVertexColorFilter(QtCore.QObject):
         self.color = (0, 0, 0, 1.0)
 
     @staticmethod
-    def filter_color(color, index, source_color=None):
+    def filter_color(color, index, base_color=None):
         if index > 3:
             return color
-        is_color = isinstance(source_color, OpenMaya.MColor)
-        color_list = list(source_color) if is_color else [0, 0, 0, 1]
+        is_color = isinstance(base_color, OpenMaya.MColor)
+        color_list = list(base_color) if is_color else [0, 0, 0, 1]
         color_list[index] = color[index]
         return OpenMaya.MColor(*color_list)
 
@@ -283,12 +286,26 @@ class AppVertexColorFilter(QtCore.QObject):
         rgb.append(alpha)
 
         self.color = rgb or self.color
-        sel = pm.radioButtonGrp(self.single_control, q=1, sl=1) - 1
-        color = self.filter_color(self.color, index=sel) if sel >= 0 else self.color
+        sel = pm.radioButtonGrp(self.single_control, q=1, sl=1)
+        color = self.filter_color(self.color, index=sel) if sel - 1 >= 0 else self.color
         pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, cl4=tuple(color))
 
         # NOTE(timmyliang): collect viewport color set
         self.collect_viewport_vertex_ids()
+
+        # NOTE(timmyliang): change color set
+        mode = self.option_items[sel + 1]
+        if mode == "Auto":
+            return
+        for node in self.get_paint_nodes():
+            original_color_set = node.getCurrentColorSetName()
+            pm.evalDeferred(partial(node.setCurrentColorSetName, original_color_set))
+            if mode == "RGB":
+                color_sets = self.get_color_sets(node)
+                color_set = color_sets[0]
+            else:
+                color_set = "VertexColor{0}".format(mode)
+                node.setCurrentColorSetName(color_set)
 
     def release_viewport(self):
         # NOTE(timmyliang): reset vertex color
@@ -350,7 +367,7 @@ class AppVertexColorFilter(QtCore.QObject):
     def on_display_mode_change(cls, mode):
         if mode == "Auto":
             sel = pm.radioButtonGrp(cls.single_control, q=1, sl=1)
-            mode = cls.option_items[sel]
+            mode = cls.option_items[sel + 1]
         for node in cls.get_paint_nodes():
             color_sets = cls.get_color_sets(node)
             main_color_set = color_sets[0]
