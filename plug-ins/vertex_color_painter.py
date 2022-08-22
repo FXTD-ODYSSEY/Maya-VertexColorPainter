@@ -22,7 +22,9 @@ from __future__ import print_function
 
 # Import built-in modules
 from collections import defaultdict
+from contextlib import contextmanager
 from functools import partial
+import sys
 
 # Import third-party modules
 from Qt import QtCore
@@ -41,6 +43,10 @@ __date__ = "2022-08-12 15:31:41"
 
 
 PAINT_CTX = "artAttrColorPerVertexContext"
+SINGLE_CONTROL = "artAttrColorSingleColorChannel"
+OPTION_CONTROL = "artAttrColorSingleColorOptionMenu"
+CHANNELS = "RGBA"
+OPTION_ITEMS = ["Auto", "RGB"] + list(CHANNELS)
 
 
 def iterate_mit(itr):
@@ -77,34 +83,16 @@ def to_component_mode(func):
     return decorator
 
 
-class AppVertexColorFilter(QtCore.QObject):
-    pressed = QtCore.Signal()
-    released = QtCore.Signal()
-    property_showed = QtCore.Signal()
-    inst = None
-    vertex_color_data = defaultdict(OpenMaya.MIntArray)
+class ApplyVertexColorBase(object):
+    @staticmethod
+    def get_paint_nodes():
+        for node in set(pm.artAttrPaintVertexCtx(PAINT_CTX, q=1, pna=1).split()):
+            yield pm.PyNode(node)
 
-    color_set_representation = {
-        "R": "RGB",
-        "G": "RGB",
-        "B": "RGB",
-        "A": "A",
-    }
-
-    single_control = "artAttrColorSingleColorChannel"
-    option_control = "artAttrColorSingleColorOptionMenu"
-    channels = "RGBA"
-    option_items = ["Auto", "RGB"] + list(channels)
-
-    def __init__(self, *args, **kwargs):
-        super(AppVertexColorFilter, self).__init__(*args, **kwargs)
-        self.is_press_alt = False
-        self.pressed.connect(self.press_viewport)
-        self.released.connect(lambda: pm.evalDeferred(self.release_viewport))
-        self.property_showed.connect(
-            lambda: pm.evalDeferred(self.modify_property_window)
-        )
-        self.color = (0, 0, 0, 1.0)
+    @staticmethod
+    def get_color_sets(node):
+        color_sets = pm.polyColorSet(node, q=1, allColorSets=1)
+        return color_sets or pm.polyColorSet(node, create=1)
 
     @staticmethod
     def filter_color(color, index, base_color=None):
@@ -115,15 +103,31 @@ class AppVertexColorFilter(QtCore.QObject):
         color_list[index] = color[index]
         return OpenMaya.MColor(*color_list)
 
-    @staticmethod
-    def get_paint_nodes():
-        for node in set(pm.artAttrPaintVertexCtx(PAINT_CTX, q=1, pna=1).split()):
-            yield pm.PyNode(node)
 
-    @staticmethod
-    def get_color_sets(node):
-        color_sets = pm.polyColorSet(node, q=1, allColorSets=1)
-        return color_sets or pm.polyColorSet(node, create=1)
+class AppVertexColorFilter(ApplyVertexColorBase, QtCore.QObject):
+    pressed = QtCore.Signal()
+    released = QtCore.Signal()
+    property_showed = QtCore.Signal()
+    inst = None
+
+    color_set_representation = {
+        "R": "RGB",
+        "G": "RGB",
+        "B": "RGB",
+        "A": "A",
+    }
+
+    def __init__(self, *args, **kwargs):
+        super(AppVertexColorFilter, self).__init__(*args, **kwargs)
+        self.is_press_alt = False
+        self.pressed.connect(self.press_viewport)
+        # NOTE(timmyliang): collect viewport color set
+        self.pressed.connect(ApplyVertexColorCommand.collect_viewport_vertex_ids)
+        self.released.connect(lambda: pm.evalDeferred(self.release_viewport))
+        self.property_showed.connect(
+            lambda: pm.evalDeferred(self.modify_property_window)
+        )
+        self.color = (0, 0, 0, 1.0)
 
     @classmethod
     def setup_color_set(cls):
@@ -141,7 +145,7 @@ class AppVertexColorFilter(QtCore.QObject):
             OpenMaya.MScriptUtil.createIntArrayFromList(vtx_list, vtx_array)
 
             final_colors = OpenMaya.MColorArray()
-            for channel_index, color_channel in enumerate(cls.channels):
+            for channel_index, color_channel in enumerate(CHANNELS):
                 color_set = "VertexColor{0}".format(color_channel)
                 if color_set not in color_sets:
                     rpt = cls.color_set_representation.get(color_channel)
@@ -159,86 +163,10 @@ class AppVertexColorFilter(QtCore.QObject):
     def reset_color_set(cls):
         for node in cls.get_paint_nodes():
             color_sets = cls.get_color_sets(node)
-            for color_channel in cls.channels:
+            for color_channel in CHANNELS:
                 color_set = "VertexColor{0}".format(color_channel)
                 if color_set in color_sets:
                     pm.polyColorSet(node, delete=1, colorSet=color_set)
-
-    @classmethod
-    @to_component_mode
-    @use_select_depth
-    def collect_viewport_vertex_ids(cls):
-        """Collect Viewport Paintable Component."""
-        selections = OpenMaya.MSelectionList()
-        component_selections = OpenMaya.MSelectionList()
-        OpenMaya.MGlobal.getActiveSelectionList(selections)
-
-        view = OpenMayaUI.M3dView.active3dView()
-        OpenMaya.MGlobal.selectFromScreen(
-            0, 0, view.portWidth(), view.portHeight(), OpenMaya.MGlobal.kReplaceList
-        )
-        # NOTES(timmyliang): expand select index
-        pm.polySelectConstraint(pp=1)
-        pm.polySelectConstraint(pp=1)
-        OpenMaya.MGlobal.getActiveSelectionList(component_selections)
-        OpenMaya.MGlobal.setActiveSelectionList(selections)
-
-        cls.vertex_color_data.clear()
-        for itr in iterate_mit(OpenMaya.MItSelectionList(component_selections)):
-            dag_path = OpenMaya.MDagPath()
-            component = OpenMaya.MObject()
-            itr.getDagPath(dag_path, component)
-
-            for vtx_itr in iterate_mit(OpenMaya.MItMeshVertex(dag_path, component)):
-                index = vtx_itr.index()
-                cls.vertex_color_data[dag_path.fullPathName()].append(index)
-
-    @classmethod
-    def apply_color_channel(cls):
-        index = pm.radioButtonGrp(cls.single_control, q=1, sl=1)
-        mode = cls.option_items[index + 1]
-        is_rgb = mode == "RGB"
-        for node in cls.get_paint_nodes():
-            mesh = node.__apimfn__()
-            color_sets = cls.get_color_sets(node)
-            main_color_set = color_sets[0]
-
-            current_color_set = mesh.currentColorSetName()
-
-            main_colors = OpenMaya.MColorArray()
-            mesh.getVertexColors(main_colors, main_color_set)
-            vtx_array = cls.vertex_color_data[node.fullPathName()]
-            final_colors = OpenMaya.MColorArray()
-
-            if is_rgb:
-                for channel_index, color_channel in enumerate(cls.channels):
-                    final_colors.clear()
-                    color_set = "VertexColor{0}".format(color_channel)
-                    mesh.setCurrentColorSetName(color_set)
-                    for vtx_index in vtx_array:
-                        main_color = main_colors[vtx_index]
-                        color = cls.filter_color(main_color, channel_index)
-                        final_colors.append(color)
-                    mesh.setVertexColors(final_colors, vtx_array)
-            else:
-                mode_index = cls.option_items.index(mode) - 2
-                channel_colors = OpenMaya.MColorArray()
-                fix_colors = OpenMaya.MColorArray()
-                color_set = "VertexColor{0}".format(mode)
-                mesh.getVertexColors(channel_colors, color_set)
-                for vtx_index in vtx_array:
-                    channel_color = channel_colors[vtx_index]
-                    main_color = main_colors[vtx_index]
-                    color = cls.filter_color(channel_color, mode_index, main_color)
-                    final_colors.append(color)
-                    fix_color = cls.filter_color(channel_color, mode_index)
-                    fix_colors.append(fix_color)
-
-                mesh.setVertexColors(fix_colors, vtx_array)
-                mesh.setCurrentColorSetName(main_color_set)
-                mesh.setVertexColors(final_colors, vtx_array)
-
-            mesh.setCurrentColorSetName(current_color_set)
 
     @classmethod
     def install(cls):
@@ -286,15 +214,17 @@ class AppVertexColorFilter(QtCore.QObject):
         rgb.append(alpha)
 
         self.color = rgb or self.color
-        sel = pm.radioButtonGrp(self.single_control, q=1, sl=1)
-        color = self.filter_color(self.color, index=sel) if sel - 1 >= 0 else self.color
+        index = pm.radioButtonGrp(SINGLE_CONTROL, q=1, sl=1)
+        channel = index - 1
+        color = (
+            self.filter_color(self.color, index=channel)
+            if channel - 1 >= 0
+            else self.color
+        )
         pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, cl4=tuple(color))
 
-        # NOTE(timmyliang): collect viewport color set
-        self.collect_viewport_vertex_ids()
-
         # NOTE(timmyliang): change color set
-        mode = self.option_items[sel + 1]
+        mode = OPTION_ITEMS[index + 1]
         if mode == "Auto":
             return
         for node in self.get_paint_nodes():
@@ -305,34 +235,35 @@ class AppVertexColorFilter(QtCore.QObject):
                 color_set = color_sets[0]
             else:
                 color_set = "VertexColor{0}".format(mode)
-                node.setCurrentColorSetName(color_set)
+            node.setCurrentColorSetName(color_set)
 
     def release_viewport(self):
         # NOTE(timmyliang): reset vertex color
         pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, cl4=self.color)
 
         # NOTE(timmyliang): get color channel apply to main color set
-        self.apply_color_channel()
+        # self.apply_color_channel()
+        pm.applyVertexColorCommand()
 
     def modify_property_window(self):
 
         # NOTES(timmyliang): avoid multiple ui modifications
-        if pm.radioButtonGrp(self.single_control, q=1, ex=1):
+        if pm.radioButtonGrp(SINGLE_CONTROL, q=1, ex=1):
             return
         row_layout = pm.rowLayout(numberOfColumns=2)
         grp = pm.radioButtonGrp(
             label="Single Channel:",
             nrb=1,
             sl=1,
-            l1=self.option_items[1],
+            l1=OPTION_ITEMS[1],
             columnWidth=[(1, 130)],
             onCommand=self.on_channel_change,
         )
         pm.radioButtonGrp(
-            self.single_control,
+            SINGLE_CONTROL,
             shareCollection=grp,
             numberOfRadioButtons=4,
-            labelArray4=self.option_items[2:],
+            labelArray4=OPTION_ITEMS[2:],
             columnWidth=list(enumerate([35] * 4, 1)),
             onCommand=self.on_channel_change,
         )
@@ -348,26 +279,26 @@ class AppVertexColorFilter(QtCore.QObject):
             if child == "artAttrColorChannelChoices":
                 pm.rowLayout(row_layout, e=1, parent=column_layout)
                 pm.optionMenuGrp(
-                    self.option_control,
+                    OPTION_CONTROL,
                     label="Color Display:",
                     changeCommand=self.on_display_mode_change,
                 )
-                for item in self.option_items:
-                    pm.menuItem(label=item)
+                for option_item in OPTION_ITEMS:
+                    pm.menuItem(label=option_item)
 
         pm.setUITemplate(popTemplate=1)
 
     def on_channel_change(self, *args):
-        if pm.optionMenuGrp(self.option_control, q=1, sl=1) == 1:
-            index = pm.radioButtonGrp(self.single_control, q=1, sl=1)
-            channel = self.option_items[index + 1]
+        if pm.optionMenuGrp(OPTION_CONTROL, q=1, sl=1) == 1:
+            index = pm.radioButtonGrp(SINGLE_CONTROL, q=1, sl=1)
+            channel = OPTION_ITEMS[index + 1]
             self.on_display_mode_change(channel)
 
     @classmethod
     def on_display_mode_change(cls, mode):
         if mode == "Auto":
-            sel = pm.radioButtonGrp(cls.single_control, q=1, sl=1)
-            mode = cls.option_items[sel + 1]
+            sel = pm.radioButtonGrp(SINGLE_CONTROL, q=1, sl=1)
+            mode = OPTION_ITEMS[sel + 1]
         for node in cls.get_paint_nodes():
             color_sets = cls.get_color_sets(node)
             main_color_set = color_sets[0]
@@ -378,6 +309,145 @@ class AppVertexColorFilter(QtCore.QObject):
                 pm.polyColorSet(node, currentColorSet=1, colorSet=color_set)
         # NOTE(timmyliang): update panel
         pm.mel.syncColorPerVertexTool()
+
+
+class ApplyVertexColorCommand(ApplyVertexColorBase, OpenMayaMPx.MPxCommand):
+
+    modifiers = []
+    vertex_ids_data = defaultdict(OpenMaya.MIntArray)
+    vertex_color_data = defaultdict(lambda: defaultdict(OpenMaya.MColorArray))
+    chunk_num = 0
+
+    @classmethod
+    def command_name(cls):
+        return cls.__name__[0].lower() + cls.__name__[1:]
+
+    @classmethod
+    def creator(cls):
+        return OpenMayaMPx.asMPxPtr(cls())
+
+    def doIt(self, args):
+        return self.redoIt()
+
+    def undoIt(self):
+        self.__class__.chunk_num -= 1
+        for node in self.get_paint_nodes():
+            main_colors = self.vertex_color_data[self.chunk_num][node.fullPathName()]
+            if not main_colors.length():
+                continue
+
+            mesh = node.__apimfn__()
+            current_color_set = mesh.currentColorSetName()
+            color_sets = self.get_color_sets(node)
+            main_color_set = color_sets[0]
+            mesh.setCurrentColorSetName(main_color_set)
+            vtx_array = OpenMaya.MIntArray()
+            for vtx_index in range(main_colors.length()):
+                vtx_array.append(vtx_index)
+
+            mesh.setVertexColors(main_colors, vtx_array)
+            for channel_index, color_channel in enumerate(CHANNELS):
+                colors = OpenMaya.MColorArray()
+                color_set = "VertexColor{0}".format(color_channel)
+                mesh.setCurrentColorSetName(color_set)
+                for vtx_index in vtx_array:
+                    main_color = main_colors[vtx_index]
+                    color = self.filter_color(main_color, channel_index)
+                    colors.append(color)
+                mesh.setVertexColors(colors, vtx_array)
+            mesh.setCurrentColorSetName(current_color_set)
+
+    def redoIt(self):
+        self.__class__.chunk_num += 1
+        index = pm.radioButtonGrp(SINGLE_CONTROL, q=1, sl=1)
+        mode = OPTION_ITEMS[index + 1]
+        for node in self.get_paint_nodes():
+            self.apply_color_channel(node, mode)
+
+    @classmethod
+    def apply_color_channel(cls, node, mode):
+        is_rgb = mode == "RGB"
+
+        mesh = node.__apimfn__()
+        color_sets = cls.get_color_sets(node)
+        main_color_set = color_sets[0]
+
+        current_color_set = mesh.currentColorSetName()
+
+        main_colors = OpenMaya.MColorArray()
+        mesh.getVertexColors(main_colors, main_color_set)
+        vtx_array = cls.vertex_ids_data[node.fullPathName()]
+        final_colors = OpenMaya.MColorArray()
+
+        if is_rgb:
+            for channel_index, color_channel in enumerate(CHANNELS):
+                final_colors.clear()
+                color_set = "VertexColor{0}".format(color_channel)
+                mesh.setCurrentColorSetName(color_set)
+                for vtx_index in vtx_array:
+                    main_color = main_colors[vtx_index]
+                    color = cls.filter_color(main_color, channel_index)
+                    final_colors.append(color)
+                mesh.setVertexColors(final_colors, vtx_array)
+        else:
+            mode_index = OPTION_ITEMS.index(mode) - 2
+            channel_colors = OpenMaya.MColorArray()
+            fix_colors = OpenMaya.MColorArray()
+            color_set = "VertexColor{0}".format(mode)
+            mesh.getVertexColors(channel_colors, color_set)
+            for vtx_index in vtx_array:
+                channel_color = channel_colors[vtx_index]
+                main_color = main_colors[vtx_index]
+                color = cls.filter_color(channel_color, mode_index, main_color)
+                final_colors.append(color)
+                fix_color = cls.filter_color(channel_color, mode_index)
+                fix_colors.append(fix_color)
+
+            mesh.setVertexColors(fix_colors, vtx_array)
+            mesh.setCurrentColorSetName(main_color_set)
+            mesh.setVertexColors(final_colors, vtx_array)
+
+        mesh.setCurrentColorSetName(current_color_set)
+
+    @classmethod
+    @to_component_mode
+    @use_select_depth
+    def collect_viewport_vertex_ids(cls):
+        """Collect Viewport Paintable Component."""
+        selections = OpenMaya.MSelectionList()
+        component_selections = OpenMaya.MSelectionList()
+        OpenMaya.MGlobal.getActiveSelectionList(selections)
+
+        view = OpenMayaUI.M3dView.active3dView()
+        OpenMaya.MGlobal.selectFromScreen(
+            0, 0, view.portWidth(), view.portHeight(), OpenMaya.MGlobal.kReplaceList
+        )
+        # NOTES(timmyliang): expand select index
+        pm.polySelectConstraint(pp=1)
+        pm.polySelectConstraint(pp=1)
+        OpenMaya.MGlobal.getActiveSelectionList(component_selections)
+        OpenMaya.MGlobal.setActiveSelectionList(selections)
+
+        for itr in iterate_mit(OpenMaya.MItSelectionList(component_selections)):
+            dag_path = OpenMaya.MDagPath()
+            component = OpenMaya.MObject()
+            itr.getDagPath(dag_path, component)
+
+            mesh = OpenMaya.MFnMesh(dag_path)
+            color_sets = []
+            mesh.getColorSetNames(color_sets)
+            mesh.getVertexColors(
+                cls.vertex_color_data[cls.chunk_num][dag_path.fullPathName()],
+                color_sets[0],
+            )
+            vtx_array = cls.vertex_ids_data[dag_path.fullPathName()]
+            vtx_array.clear()
+            for vtx_itr in iterate_mit(OpenMaya.MItMeshVertex(dag_path, component)):
+                index = vtx_itr.index()
+                vtx_array.append(index)
+
+    def isUndoable(self):
+        return True
 
 
 def mel_proc(func):
@@ -396,9 +466,20 @@ def vertex_color_tool_off():
     AppVertexColorFilter.uninstall()
 
 
+@contextmanager
+def try_run(name):
+    try:
+        yield name
+    except:
+        sys.stderr.write("Failed to register: %s\n" % name)
+        raise
+
+
 # Initialize the script plug-in
 def initializePlugin(obj):
     plugin_fn = OpenMayaMPx.MFnPlugin(obj, "timmyliang", "1.0.0")
+    with try_run(ApplyVertexColorCommand.command_name()) as name:
+        plugin_fn.registerCommand(name, ApplyVertexColorCommand.creator)
 
     PAINT_CTX = pm.mel.artAttrColorPerVertexToolScript(5)
     # NOTES(timmyliang): close Tool Settings UI
@@ -411,5 +492,7 @@ def initializePlugin(obj):
 # Uninitialize the script plug-in
 def uninitializePlugin(obj):
     plugin_fn = OpenMayaMPx.MFnPlugin(obj)
+    with try_run(ApplyVertexColorCommand.command_name()) as name:
+        plugin_fn.deregisterCommand(name)
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, top="")
     pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, tfp="")
