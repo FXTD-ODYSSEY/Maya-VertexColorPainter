@@ -2,8 +2,6 @@
 """
 Paint Vertex Color with single Channel support.
 
-- [ ] undo
-
 --- Test Code ---
 
 from maya import cmds
@@ -12,7 +10,7 @@ cmds.polySphere()
 cmds.polyColorPerVertex( rgb=(1,1, 0) )
 if cmds.pluginInfo('vertex_color_painter',q=1,l=1):
     cmds.unloadPlugin('vertex_color_painter')
-cmds.loadPlugin(r"F:\repo\Maya-VertexColorPainter\plug-ins\vertex_color_painter.py")
+cmds.loadPlugin(r"F:/repo/Maya-VertexColorPainter/plug-ins/vertex_color_painter.py")
 """
 
 # Import future modules
@@ -124,9 +122,7 @@ class AppVertexColorFilter(ApplyVertexColorBase, QtCore.QObject):
         # NOTE(timmyliang): collect viewport color set
         self.pressed.connect(ApplyVertexColorCommand.collect_viewport_vertex_ids)
         self.released.connect(lambda: pm.evalDeferred(self.release_viewport))
-        self.property_showed.connect(
-            lambda: pm.evalDeferred(self.modify_property_window)
-        )
+        self.property_showed.connect(lambda: pm.evalDeferred(self.modify_property_window))
         self.color = (0, 0, 0, 1.0)
 
     @classmethod
@@ -137,6 +133,7 @@ class AppVertexColorFilter(ApplyVertexColorBase, QtCore.QObject):
             main_color_set = color_sets[0]
 
             mesh = node.__apimfn__()
+            mesh.updateSurface()
             color_array = OpenMaya.MColorArray()
             mesh.getVertexColors(color_array, main_color_set)
 
@@ -170,10 +167,11 @@ class AppVertexColorFilter(ApplyVertexColorBase, QtCore.QObject):
 
     @classmethod
     def install(cls):
-        cls.inst = cls()
-        app = QtWidgets.QApplication.instance()
-        app.installEventFilter(cls.inst)
-        cls.inst.setup_color_set()
+        if not cls.inst:
+            cls.inst = cls()
+            app = QtWidgets.QApplication.instance()
+            app.installEventFilter(cls.inst)
+        pm.evalDeferred(cls.inst.setup_color_set, lp=1)
 
     @classmethod
     def uninstall(cls):
@@ -216,11 +214,7 @@ class AppVertexColorFilter(ApplyVertexColorBase, QtCore.QObject):
         self.color = rgb or self.color
         index = pm.radioButtonGrp(SINGLE_CONTROL, q=1, sl=1)
         channel = index - 1
-        color = (
-            self.filter_color(self.color, index=channel)
-            if channel - 1 >= 0
-            else self.color
-        )
+        color = self.filter_color(self.color, index=channel) if channel - 1 >= 0 else self.color
         pm.artAttrPaintVertexCtx(PAINT_CTX, e=1, cl4=tuple(color))
 
         # NOTE(timmyliang): change color set
@@ -313,7 +307,6 @@ class AppVertexColorFilter(ApplyVertexColorBase, QtCore.QObject):
 
 class ApplyVertexColorCommand(ApplyVertexColorBase, OpenMayaMPx.MPxCommand):
 
-    modifiers = []
     vertex_ids_data = defaultdict(OpenMaya.MIntArray)
     vertex_color_data = defaultdict(lambda: defaultdict(OpenMaya.MColorArray))
     chunk_num = 0
@@ -419,9 +412,7 @@ class ApplyVertexColorCommand(ApplyVertexColorBase, OpenMayaMPx.MPxCommand):
         OpenMaya.MGlobal.getActiveSelectionList(selections)
 
         view = OpenMayaUI.M3dView.active3dView()
-        OpenMaya.MGlobal.selectFromScreen(
-            0, 0, view.portWidth(), view.portHeight(), OpenMaya.MGlobal.kReplaceList
-        )
+        OpenMaya.MGlobal.selectFromScreen(0, 0, view.portWidth(), view.portHeight(), OpenMaya.MGlobal.kReplaceList)
         # NOTES(timmyliang): expand select index
         pm.polySelectConstraint(pp=1)
         pm.polySelectConstraint(pp=1)
@@ -470,8 +461,8 @@ def vertex_color_tool_off():
 def try_run(name):
     try:
         yield name
-    except:
-        sys.stderr.write("Failed to register: %s\n" % name)
+    except Exception:
+        sys.stderr.write("Failed to register: %s/n" % name)
         raise
 
 
